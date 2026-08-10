@@ -1,1 +1,1214 @@
+--Replicated Storage/Combat/Modules/Ragdoll
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
 
+
+local Sockets = {}
+local Colliders = {}
+local Attachments = {}
+
+local Ragdoll = {}
+
+local Params = RaycastParams.new()
+Params.FilterType = Enum.RaycastFilterType.Exclude
+Params.FilterDescendantsInstances = {workspace, workspace}
+
+function CreateCollider(Item : BasePart, Character : Model)
+	local Collider = Instance.new("Part")
+	Collider.Size = Item.Size / 2
+	Collider.Transparency = 1
+
+	local NoCollisionConstraint = Instance.new("NoCollisionConstraint")
+	NoCollisionConstraint.Part0 = Item
+	NoCollisionConstraint.Part1 = Collider
+	NoCollisionConstraint.Parent = Collider
+
+	local Weld = Instance.new("Weld")
+	Weld.Part0 = Item
+	Weld.Part1 = Collider
+
+	Weld.Parent = Collider
+	Collider.Parent = Item
+
+	Colliders[Character][Item] = Collider
+end
+
+function Ragdoll.Start(Character : Model, Duration : number)
+	if Character == nil then 
+		return 
+	end
+
+	local Humanoid : Humanoid = Character:WaitForChild("Humanoid")
+	local RootPart = Humanoid.RootPart
+
+	if Character:GetAttribute("Ragdolled") or Humanoid.Health < 1 then
+		return
+	end
+
+	local Impact : RBXScriptConnection
+
+	Sockets[Character] = {}
+	Colliders[Character] = {}
+	Attachments[Character] = {}
+
+	Character:SetAttribute("Ragdolled", true)
+
+	local iframe = Instance.new("BoolValue", Character)
+	iframe.Name = "Iframe"
+	
+	local stun = Instance.new("BoolValue", Character)
+	stun.Name = "Stun"
+	
+	Humanoid.RequiresNeck = false
+	Humanoid.PlatformStand = true
+	Humanoid.AutoRotate = false
+
+	for _, Item in ipairs(Character:GetDescendants()) do
+		if Item:IsDescendantOf(RootPart) then 
+			continue
+		end
+
+		if Item:FindFirstAncestorWhichIsA("Model") ~= Character then
+			continue
+		end
+
+		if Item:IsA("Motor6D") then
+			CreateCollider(Item.Part1, Character)
+
+			Item.Enabled = false
+
+			local Attachment0 = Instance.new("Attachment")
+			Attachment0.CFrame = Item.C0
+			Attachment0.Parent = Item.Part0
+
+			local Attachment1 = Instance.new("Attachment")
+			Attachment1.CFrame = Item.C1
+			Attachment1.Parent = Item.Part1
+
+			local Socket = Instance.new("BallSocketConstraint")
+			Socket.Attachment0 = Attachment0
+			Socket.Attachment1 = Attachment1
+
+			Socket.LimitsEnabled = true
+			Socket.TwistLimitsEnabled = true
+
+			Socket.Parent = Item.Parent
+			Sockets[Character][Item] = Socket
+
+			table.insert(Attachments[Character], Attachment0)
+			table.insert(Attachments[Character], Attachment1)
+		end
+	end
+
+	if Duration ~= nil then
+		task.delay(Duration, function()
+			Ragdoll.Stop(Character)
+		end)
+	end
+end
+
+function Ragdoll.Stop(Character : Model)
+	if Character:FindFirstChild("NoUnragdoll") then return end
+	if Character:FindFirstChild("Downed") then return end
+	
+	if Character == nil then
+		return
+	end
+
+	if not Character:GetAttribute("Ragdolled") then
+		return
+	end
+
+	local Humanoid : Humanoid = Character:WaitForChild("Humanoid")
+	local RootPart = Humanoid.RootPart
+
+	
+
+	Humanoid.RequiresNeck = true
+	Humanoid.PlatformStand = false
+	Humanoid.AutoRotate = true
+
+	Character:SetAttribute("Ragdolled", false)
+	
+	if Character:FindFirstChild("Stun") then
+		Character.Stun:Destroy()
+	end
+	
+	task.delay(.25, function()
+		if Character:FindFirstChild("Iframe") then
+			Character.Iframe:Destroy()
+		end
+	end)
+
+	RootPart.CFrame = CFrame.lookAt(Vector3.zero, RootPart.CFrame.RightVector:Cross(-Vector3.yAxis)) + RootPart.Position
+
+	
+
+	for Limb, Collider in pairs(Colliders[Character]) do
+		for _, Attachment in pairs(Limb:GetChildren()) do
+			if Attachment:IsA("Attachment") then
+				Attachment:Destroy()
+			end
+		end
+
+		Collider:Destroy()
+	end
+
+	for _, Attachment in pairs(Attachments[Character]) do
+		Attachment:Destroy()
+	end
+
+	for Joint, Socket in pairs(Sockets[Character]) do
+		Joint.Enabled = true
+		Socket:Destroy()
+	end
+
+	table.clear(Sockets[Character])
+	table.clear(Colliders[Character])
+	table.clear(Attachments[Character])
+
+	Sockets[Character] = nil
+	Colliders[Character] = nil
+	Attachments[Character] = nil
+end
+
+return Ragdoll
+
+--ServerScriptService/Server
+local hit = require(script.Combat)
+
+--ServerScriptService/Server/Block
+
+local block = {}
+
+function block.Start(player)
+	local block = Instance.new("BoolValue", player)
+	block.Name = "Block"
+end
+
+function block.Stop(player)
+	if player:FindFirstChild("Block") then
+		player.Block:Destroy()
+	end
+end
+
+return block
+
+--ServerScriptService/Server/Combat
+
+local combat = {}
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local combat = ReplicatedStorage:WaitForChild("Combat")
+local animations = combat:WaitForChild("Animations")
+local remotes = combat:WaitForChild("Remotes")
+local sfx = combat:WaitForChild("SFX")
+local modules = combat:WaitForChild("Modules")
+local configuration = combat:WaitForChild("Configuration")
+
+local hit = require(script.Parent.Hit)
+local block = require(script.Parent.Block)
+local ragdoll = require(modules.Ragdoll)
+
+
+remotes.Combat.OnServerEvent:Connect(function(player, data)
+	if data.action == "hit" then
+		if next(data.hits) then
+			for _, v in pairs(data.hits) do
+				hit.hit(player.Character, v, configuration:GetAttribute("M1_Damage"), configuration:GetAttribute("Stun_Time"), data.combo, data.state)
+			end
+		else
+			if data.combo == 4 then
+				local stun = Instance.new("BoolValue", player.Character)
+				stun.Name = "Stun"
+				task.delay(configuration:GetAttribute("Stun_Time"), function()
+					stun:Destroy()
+				end)
+			end
+		end
+		
+	elseif data.action == "block" then
+		block.Start(player.Character)
+		
+	elseif data.action == "unblock" then
+		block.Stop(player.Character)
+		
+	elseif data.action == "evasive" then
+		ragdoll.Stop(player.Character)
+	end
+end)
+
+return combat
+
+--ServerScriptService/Server/Hit
+
+local hit = {}
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+local combat = ReplicatedStorage:WaitForChild("Combat")
+local animations = combat:WaitForChild("Animations")
+local sfx = combat:WaitForChild("SFX")
+local fxstorage = combat:WaitForChild("Fx")
+local configuration = combat:WaitForChild("Configuration")
+
+local modules = combat:WaitForChild("Modules")
+local ragdoll = require(modules.Ragdoll)
+
+
+function hit.hit(player, v, damage, stuntime, combo, state)
+	if v:FindFirstChild("Iframe") then return end
+	
+	if v:FindFirstChild("Block") then
+		if (player.HumanoidRootPart.Position - v.HumanoidRootPart.Position).Unit:Dot(v.HumanoidRootPart.CFrame.LookVector) > 0.5 then
+			local load = v.Humanoid:LoadAnimation(animations.Block.Hit:FindFirstChild(math.random(1, #animations.Block.Hit:GetChildren())))
+			load.Priority = Enum.AnimationPriority.Action4
+			load:Play()
+
+			local sfxclone = sfx.Block:Clone()
+			sfxclone.Parent = v.HumanoidRootPart
+			sfxclone:Play()
+			task.delay(sfxclone.TimeLength, function()
+				sfxclone:Destroy()
+			end)
+
+			if combo == 4 then
+				local stun = Instance.new("BoolValue", player)
+				stun.Name = "Stun"
+				task.delay(stuntime, function()
+					stun:Destroy()
+				end)
+			end
+
+			return
+		end
+	end
+	
+	if state == "land" or state == "air" then
+		v.Humanoid:TakeDamage(damage)
+
+		local stun = Instance.new("BoolValue", v)
+		stun.Name = "Stun"
+
+		local sfxclone = sfx.Hit:Clone()
+		sfxclone.Parent = v.HumanoidRootPart
+		sfxclone:Play()
+		task.delay(sfxclone.TimeLength, function()
+			sfxclone:Destroy()
+		end)
+
+		local fx = fxstorage.Hit:Clone()
+		fx.Parent = workspace.Fx
+		fx.CFrame = v.HumanoidRootPart.CFrame
+		task.wait(.01)
+		for _, v in pairs(fx:GetDescendants()) do
+			if v:IsA("ParticleEmitter") then
+				v:Emit(10)
+			end
+		end
+		task.delay(2, function()
+			fx:Destroy()
+		end)
+
+		local dmgindicator = script.DamageIndicator:Clone()
+		dmgindicator.Parent = v
+		dmgindicator.ExtentsOffset = Vector3.new((math.random(-10, 10) / 10), .5, 0)
+		dmgindicator.Count.Text = "- "..damage
+		TweenService:Create(dmgindicator, TweenInfo.new(stuntime), {ExtentsOffset = Vector3.new(dmgindicator.ExtentsOffset.X, 1, 0)}):Play()
+
+		local highlight = Instance.new("Highlight", v)
+		highlight.OutlineTransparency = 1
+		highlight.FillTransparency = 0
+		highlight.FillColor = Color3.new(1, 0, 0)
+		highlight.DepthMode = Enum.HighlightDepthMode.Occluded
+		TweenService:Create(highlight, TweenInfo.new(stuntime), {FillTransparency = 1}):Play()
+
+		if combo == 4 then
+			if state == "land" then
+				local velocity = Instance.new("BodyVelocity", v.HumanoidRootPart)
+				velocity.MaxForce = Vector3.new(1, 1, 1) * math.huge
+				velocity.Velocity = player.HumanoidRootPart.CFrame.LookVector * 35
+				task.delay(.4, function()
+					velocity:Destroy()
+				end)
+				
+				if configuration:GetAttribute("Ragdoll") == true then
+					task.spawn(function()
+						ragdoll.Start(v, configuration:GetAttribute("Ragdoll_Duration"))
+					end)
+				else
+					local load = v.Humanoid:LoadAnimation(animations.Dash.Back)
+					load.Priority = Enum.AnimationPriority.Action4
+					load:Play()
+					load:AdjustSpeed(1.5)
+				end
+				
+			elseif state == "air" then
+				if configuration:GetAttribute("Ragdoll") == true then
+					task.spawn(function()
+						ragdoll.Start(v, configuration:GetAttribute("Ragdoll_Duration"))
+					end)
+				end
+
+				local velocity = Instance.new("BodyVelocity", v.HumanoidRootPart)
+				velocity.MaxForce = Vector3.new(1, 1, 1) * math.huge
+				velocity.Velocity = player.HumanoidRootPart.CFrame.LookVector * 10 + Vector3.new(0, 35, 0)
+				task.delay(.15, function()
+					velocity:Destroy()
+				end)
+			end
+		else
+			local load = v.Humanoid:LoadAnimation(animations.Hits:FindFirstChild(math.random(1, #animations.Hits:GetChildren())))
+			load.Priority = Enum.AnimationPriority.Action4
+			load:Play()
+		end
+
+		task.delay(stuntime, function()
+			stun:Destroy()
+			highlight:Destroy()
+			dmgindicator:Destroy()
+		end)
+	else
+		v.Humanoid:TakeDamage(damage)
+
+		local stun = Instance.new("BoolValue", v)
+		stun.Name = "Stun"
+
+		local sfxclone = sfx.Hit:Clone()
+		sfxclone.Parent = v.HumanoidRootPart
+		sfxclone:Play()
+		task.delay(sfxclone.TimeLength, function()
+			sfxclone:Destroy()
+		end)
+
+		local fx = fxstorage.Hit:Clone()
+		fx.Parent = workspace.Fx
+		fx.CFrame = v.HumanoidRootPart.CFrame
+		task.wait(.01)
+		for _, v in pairs(fx:GetDescendants()) do
+			if v:IsA("ParticleEmitter") then
+				v:Emit(10)
+			end
+		end
+		task.delay(2, function()
+			fx:Destroy()
+		end)
+
+		local dmgindicator = script.DamageIndicator:Clone()
+		dmgindicator.Parent = v
+		dmgindicator.ExtentsOffset = Vector3.new((math.random(-10, 10) / 10), .5, 0)
+		dmgindicator.Count.Text = "- "..damage
+		TweenService:Create(dmgindicator, TweenInfo.new(stuntime), {ExtentsOffset = Vector3.new(dmgindicator.ExtentsOffset.X, 1, 0)}):Play()
+
+		local highlight = Instance.new("Highlight", v)
+		highlight.OutlineTransparency = 1
+		highlight.FillTransparency = 0
+		highlight.FillColor = Color3.new(1, 0, 0)
+		highlight.DepthMode = Enum.HighlightDepthMode.Occluded
+		TweenService:Create(highlight, TweenInfo.new(stuntime), {FillTransparency = 1}):Play()
+
+		if combo == 4 then
+			if configuration:GetAttribute("Ragdoll") == true then
+				task.spawn(function()
+					ragdoll.Start(v, configuration:GetAttribute("Ragdoll_Duration"))
+				end)
+			else
+				local load = v.Humanoid:LoadAnimation(animations.Dash.Back)
+				load.Priority = Enum.AnimationPriority.Action4
+				load:Play()
+				load:AdjustSpeed(1.5)
+			end
+		else
+			local load = v.Humanoid:LoadAnimation(animations.Hits:FindFirstChild(math.random(1, #animations.Hits:GetChildren())))
+			load.Priority = Enum.AnimationPriority.Action4
+			load:Play()
+		end
+
+		task.delay(stuntime, function()
+			stun:Destroy()
+			highlight:Destroy()
+			dmgindicator:Destroy()
+		end)
+	end
+end
+
+return hit
+
+--StartGui/Combat/Client
+
+local UserInputService = game:GetService("UserInputService")
+local ContentProvider = game:GetService("ContentProvider")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local m1 = require(script.M1)
+local dash = require(script.Dash)
+local block = require(script.Block)
+local state = require(script.State)
+
+local mobilegui = script.Parent.MobileGui
+local consolegui = script.Parent.ConsoleGui
+local keyboardgui = script.Parent.KeyboardGui
+
+local player = game.Players.LocalPlayer
+local character = player.Character
+
+local blocking = false
+
+
+if UserInputService.KeyboardEnabled == true then
+	keyboardgui.Visible = true
+	mobilegui.Visible = false
+	consolegui.Visible = false
+
+elseif UserInputService.TouchEnabled == true then
+	mobilegui.Visible = true
+	keyboardgui.Visible = false
+	consolegui.Visible = false
+	
+	repeat task.wait()
+		if player:WaitForChild("PlayerGui").TouchGui.TouchControlFrame:FindFirstChild("JumpButton") then
+			player:WaitForChild('PlayerGui').TouchGui.TouchControlFrame.JumpButton:Destroy()
+		end
+	until player:WaitForChild("PlayerGui").TouchGui.TouchControlFrame:FindFirstChild("JumpButton") == nil
+
+elseif UserInputService.GamepadEnabled == true then
+	consolegui.Visible = true
+	mobilegui.Visible = false
+	keyboardgui.Visible = false
+end
+
+
+
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if gameProcessed then return end
+	if character:FindFirstChildOfClass("Tool") then return end
+	
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.KeyCode == Enum.KeyCode.ButtonR2 then
+		if character:FindFirstChild("Block") == nil and character:FindFirstChild("Stun") == nil then
+			local currentstate = state.GetState()
+			m1.Start(currentstate)
+		end
+		
+	elseif input.KeyCode == Enum.KeyCode.Q or input.KeyCode == Enum.KeyCode.ButtonX then
+		if character:FindFirstChild("Block") == nil and character:FindFirstChild("Stun") == nil then
+			dash.Start()
+		end
+		
+	elseif input.KeyCode == Enum.KeyCode.F or input.KeyCode == Enum.KeyCode.ButtonY then
+		if character:FindFirstChild("Stun") == nil then
+			block.Start()
+		end
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+	if input.KeyCode == Enum.KeyCode.F or input.KeyCode == Enum.KeyCode.ButtonY then
+		block.Stop()
+	end
+end)
+
+
+local jumppressing = false
+local jumpcd = false
+for _, v in pairs(mobilegui:GetChildren()) do
+	if v:IsA("ImageButton") then
+		v.MouseButton1Down:Connect(function()
+			if v.Name == "M1" then
+				if character:FindFirstChild("Block") == nil and character:FindFirstChild("Stun") == nil then
+					local currentstate = state.GetState()
+					m1.Start(currentstate)
+				end
+				
+			elseif v.Name == "Jump" then
+				jumppressing = true
+				
+				repeat task.wait()
+					if jumpcd == false then
+						jumpcd = true
+						
+						character.Humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+						
+						task.delay(.55, function()
+							jumpcd = false
+						end)
+					end
+				until jumppressing == false
+				
+			elseif v.Name == "Block" then
+				if character:FindFirstChild("Stun") == nil then
+					block.Start()
+					blocking = true
+				end
+				
+			elseif v.Name == "Dash" then
+				if character:FindFirstChild("Block") == nil and character:FindFirstChild("Stun") == nil then
+					dash.Start()
+				end
+			end
+		end)
+		
+		v.MouseButton1Up:Connect(function()
+			if v.Name == "Jump" then
+				jumppressing = false
+				
+			elseif v.Name == "Block" then
+				block.Stop()
+			end
+		end)
+	end
+end
+
+
+character.ChildAdded:Connect(function(child)
+	if child.Name == "Stun" then
+		block.Stop()
+		character.Humanoid.WalkSpeed = 0
+		character.Humanoid.JumpPower = 0 
+		character.Humanoid.JumpHeight = 0
+	end
+end)
+
+character.ChildRemoved:Connect(function(child)
+	if child.Name == "Stun" and character:FindFirstChild("Stun") == nil then
+		character.Humanoid.WalkSpeed = game.StarterPlayer.CharacterWalkSpeed
+		character.Humanoid.JumpPower = game.StarterPlayer.CharacterJumpPower
+		character.Humanoid.JumpHeight = game.StarterPlayer.CharacterJumpHeight
+	end
+end)
+
+
+
+task.spawn(function()
+	for _, v in pairs(ReplicatedStorage.Combat.Animations:GetDescendants()) do
+		if v:IsA("Animation") then
+			ContentProvider:PreloadAsync({v})
+		end
+	end
+end)
+
+--StarterGui/Combat/Client/Block
+
+local block = {}
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local combat = ReplicatedStorage:WaitForChild("Combat")
+local animations = combat:WaitForChild("Animations")
+local remotes = combat:WaitForChild("Remotes")
+local configuration = combat:WaitForChild("Configuration")
+
+local player = game.Players.LocalPlayer
+local character = player.Character
+
+local cd = false
+local blocking = false
+
+
+function block.Start()
+	if cd == false then
+		blocking = true
+		cd = true
+		
+		remotes.Combat:FireServer({action = "block"})
+
+		local load = character.Humanoid:LoadAnimation(animations.Block.Idle)
+		load.Priority = Enum.AnimationPriority.Action4
+		load:Play()
+
+		repeat wait()
+		until blocking == false
+				
+		load:Stop()
+		
+		remotes.Combat:FireServer({action = "unblock"})
+
+		task.delay(configuration:GetAttribute("Block_Cooldown"), function()
+			cd = false
+		end)
+	end
+end
+
+function block.Stop()
+	blocking = false
+end
+
+
+return block
+
+--StarterGui/Combat/Client/Dash
+
+local dash = {}
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+
+local combat = ReplicatedStorage:WaitForChild("Combat")
+local animations = combat:WaitForChild("Animations")
+local sfxstorage = combat:WaitForChild("SFX")
+local fxstorage = combat:WaitForChild("Fx")
+local remotes = combat:WaitForChild("Remotes")
+
+local player = game.Players.LocalPlayer
+local character = player.Character
+
+local frontcd = false
+local sidecd = false
+local cd = false
+local evasive = false
+
+
+function dash.Start()
+	if character:FindFirstChild("Iframe") then
+		if evasive == false then
+			evasive = true
+			
+			remotes.Combat:FireServer({action = "evasive"})
+			
+			task.delay(10, function()
+				evasive = false
+			end)
+		end
+	end
+	
+	if cd == false and character:FindFirstChild("Stun") == nil then
+		character.Humanoid.WalkSpeed = 0
+		character.Humanoid.JumpPower = 0 
+		character.Humanoid.JumpHeight = 0
+		
+		if (character.Humanoid.MoveDirection:Dot(workspace.CurrentCamera.CFrame.RightVector) > 0.75) and sidecd == false then	-- right
+			cd = true
+			sidecd = true
+
+			local bodyVelocity = Instance.new("BodyVelocity")
+			bodyVelocity.Name = "Dash"
+			bodyVelocity.Velocity = player.Character.HumanoidRootPart.CFrame.RightVector * script.Speed:GetAttribute("Side")
+			bodyVelocity.MaxForce = Vector3.new(1, 1, 1) * math.huge
+			bodyVelocity.Parent = player.Character.HumanoidRootPart
+
+			local load = character.Humanoid:LoadAnimation(animations.Dash.Right)
+			load.Priority = Enum.AnimationPriority.Action3
+			load:Play()
+
+			task.delay(.5, function()
+				bodyVelocity:Destroy()
+				cd = false
+				
+				character.Humanoid.WalkSpeed = game.StarterPlayer.CharacterWalkSpeed
+				character.Humanoid.JumpPower = game.StarterPlayer.CharacterJumpPower
+				character.Humanoid.JumpHeight = game.StarterPlayer.CharacterJumpHeight
+				
+				task.delay(2, function()
+					sidecd = false
+				end)
+			end)
+
+		elseif (character.Humanoid.MoveDirection:Dot(-workspace.CurrentCamera.CFrame.RightVector) > 0.75) and sidecd == false then	--left
+			cd = true
+			sidecd = true
+			
+			local bodyVelocity = Instance.new("BodyVelocity")
+			bodyVelocity.Name = "Dash"
+			bodyVelocity.Velocity = -player.Character.HumanoidRootPart.CFrame.RightVector * script.Speed:GetAttribute("Side")
+			bodyVelocity.MaxForce = Vector3.new(1, 1, 1) * math.huge
+			bodyVelocity.Parent = player.Character.HumanoidRootPart
+
+			local load = character.Humanoid:LoadAnimation(animations.Dash.Left)
+			load.Priority = Enum.AnimationPriority.Action3
+			load:Play()
+			
+			task.delay(.5, function()
+				bodyVelocity:Destroy()
+				cd = false
+				
+				character.Humanoid.WalkSpeed = game.StarterPlayer.CharacterWalkSpeed
+				character.Humanoid.JumpPower = game.StarterPlayer.CharacterJumpPower
+				character.Humanoid.JumpHeight = game.StarterPlayer.CharacterJumpHeight
+
+				task.delay(2, function()
+					sidecd = false
+				end)
+			end)
+
+		elseif (character.Humanoid.MoveDirection:Dot(-workspace.CurrentCamera.CFrame.LookVector) > 0.75) and frontcd == false then	-- back
+			cd = true
+			frontcd = true
+
+			local bodyVelocity = Instance.new("BodyVelocity")
+			bodyVelocity.Name = "Dash"
+			bodyVelocity.Velocity = -player.Character.HumanoidRootPart.CFrame.LookVector * script.Speed:GetAttribute("Back")
+			bodyVelocity.MaxForce = Vector3.new(1, 1, 1) * math.huge
+			bodyVelocity.Parent = player.Character.HumanoidRootPart
+
+			local load = character.Humanoid:LoadAnimation(animations.Dash.Back)
+			load.Priority = Enum.AnimationPriority.Action3
+			load:Play()
+			load:AdjustSpeed(1.5)
+
+			task.delay(.35, function()
+				bodyVelocity:Destroy()
+				cd = false
+				
+				character.Humanoid.WalkSpeed = game.StarterPlayer.CharacterWalkSpeed
+				character.Humanoid.JumpPower = game.StarterPlayer.CharacterJumpPower
+				character.Humanoid.JumpHeight = game.StarterPlayer.CharacterJumpHeight
+
+				task.delay(3.5, function()
+					frontcd = false
+				end)
+			end)
+		else	-- front
+			if frontcd == false then
+				cd = true
+				frontcd = true
+				
+				script.Speed.DO_NOT_EDIT.Value = script.Speed:GetAttribute("Front")
+
+				local bodyVelocity = Instance.new("BodyVelocity")
+				bodyVelocity.Name = "Dash"
+				bodyVelocity.Velocity = player.Character.HumanoidRootPart.CFrame.LookVector * script.Speed:GetAttribute("Front")
+				bodyVelocity.MaxForce = Vector3.new(50000, 0, 50000)
+				bodyVelocity.Parent = player.Character.HumanoidRootPart
+
+				local load = character.Humanoid:LoadAnimation(animations.Dash.Front)
+				load.Priority = Enum.AnimationPriority.Action3
+				load:Play()
+				
+				local sfx = sfxstorage.Dash:Clone()
+				sfx.Parent = character.HumanoidRootPart
+				sfx:Play()
+				task.delay(sfx.TimeLength, function()
+					sfx:Destroy()
+				end)
+				
+				local fx = fxstorage.Dash:Clone()
+				fx.Parent = workspace.Fx
+				fx.CFrame = character.HumanoidRootPart.CFrame * CFrame.Angles(math.rad(90), math.rad(0), math.rad(0))
+				fx.Size = Vector3.new(2, .25, 2)
+				TweenService:Create(fx, TweenInfo.new(.2), {Transparency = 1, Size = Vector3.new(6, .25, 6)}):Play()
+				task.delay(.2, function()
+					fx:Destroy()
+				end)
+				
+				local connection
+				connection = RunService.RenderStepped:Connect(function()
+					bodyVelocity.Velocity = player.Character.HumanoidRootPart.CFrame.LookVector * script.Speed.DO_NOT_EDIT.Value
+				end)
+				
+				load.KeyframeReached:Connect(function(keyframe)
+					task.wait()
+
+					if character:FindFirstChild("Stun") then
+						cd = false
+
+						bodyVelocity:Destroy()
+						load:Stop()
+
+						task.delay(5, function()
+							frontcd = false
+						end)
+
+						return
+					end
+					
+					if keyframe == "Slow" then
+						TweenService:Create(script.Speed.DO_NOT_EDIT, TweenInfo.new(.2), {Value = 0}):Play()
+					
+					elseif keyframe == "Attack" then
+						local hb = Instance.new("Part")
+						hb.Size = Vector3.new(6, 6, 6)
+						hb.CFrame = character.HumanoidRootPart.CFrame * CFrame.new(0, 0, -3)
+						hb.Parent = workspace.Fx
+						hb.CanCollide = false
+						hb.Massless = true
+						hb.Transparency = 1
+						hb.Anchored = true
+						
+						local connection
+						connection = hb.Touched:Connect(function()
+							connection:Disconnect()
+						end)
+						
+						local hits = {}
+						for _, v in pairs(hb:GetTouchingParts()) do
+							if v:IsDescendantOf(character) == false then
+								if v.Parent:FindFirstChild("Humanoid") then
+									if table.find(hits, v.Parent) == nil then
+										table.insert(hits, v.Parent)
+									end
+								end
+							end
+						end
+
+						remotes.Combat:FireServer({action = "hit", hits = hits})
+						
+						hb:Destroy()
+
+					elseif keyframe == "End" then
+						if bodyVelocity then
+							bodyVelocity:Destroy()
+						end
+
+						cd = false
+						
+						character.Humanoid.WalkSpeed = game.StarterPlayer.CharacterWalkSpeed
+						character.Humanoid.JumpPower = game.StarterPlayer.CharacterJumpPower
+						character.Humanoid.JumpHeight = game.StarterPlayer.CharacterJumpHeight
+
+						connection:Disconnect()
+
+						task.delay(4, function()
+							frontcd = false
+						end)
+					end
+				end)
+			else
+				character.Humanoid.WalkSpeed = game.StarterPlayer.CharacterWalkSpeed
+				character.Humanoid.JumpPower = game.StarterPlayer.CharacterJumpPower
+				character.Humanoid.JumpHeight = game.StarterPlayer.CharacterJumpHeight
+			end
+		end
+	end
+end
+
+return dash
+
+--StarterGui/Combat/Client/M1
+
+local m1 = {}
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local combat = ReplicatedStorage:WaitForChild("Combat")
+local animations = combat:WaitForChild("Animations")
+local remotes = combat:WaitForChild("Remotes")
+
+local player = game.Players.LocalPlayer
+local character = player.Character
+
+local combo = 1
+local cd = false
+local lasthit = 0
+
+
+function m1.Start(state)
+	if character:FindFirstChild("Stun") == nil and cd == false then
+		if tick() - lasthit > 2 then
+			combo = 1
+		end
+		lasthit = tick()
+		
+		character.Humanoid.JumpPower = 0
+		character.Humanoid.JumpHeight = 0
+		
+		cd = true
+		
+		if combo == 4 then
+			if state == "air" then
+				local load = character.Humanoid:LoadAnimation(animations.M1Variants.Air)
+				load.Priority = Enum.AnimationPriority.Action4
+				load:Play()
+
+				load.KeyframeReached:Connect(function(keyframe)
+					task.wait()
+
+					if character:FindFirstChild("Stun") then
+						load:Stop()
+						cd = false
+
+						return
+					end
+
+					if keyframe == "Attack" then
+						local hb = Instance.new("Part", workspace.Fx)
+						hb.Size = Vector3.new(7, 5, 5)
+						hb.CFrame = character.HumanoidRootPart.CFrame * CFrame.new(0, 0, -2.5)
+						hb.Transparency = 1
+						hb.Anchored = true
+						hb.CanCollide = false
+
+						local connection
+						connection = hb.Touched:Connect(function()
+							connection:Disconnect()
+						end)
+
+						local hits = {}
+						for _, v in pairs(hb:GetTouchingParts()) do
+							if v:IsDescendantOf(character) == false then
+								if v.Parent:FindFirstChildOfClass("Humanoid") then
+									if table.find(hits, v.Parent) == nil then
+										table.insert(hits, v.Parent)
+									end
+								end
+							end
+						end
+
+						remotes.Combat:FireServer({action = "hit", hits = hits, combo = combo, state = state})
+
+						hb:Destroy()
+
+					elseif keyframe == "End" then
+						combo = 1
+						
+						task.wait(1)
+
+						cd = false
+						
+						task.delay(.25, function()
+							if cd == false then
+								character.Humanoid.JumpPower = game.StarterPlayer.CharacterJumpPower
+								character.Humanoid.JumpHeight = game.StarterPlayer.CharacterJumpHeight
+							end
+						end)
+					end
+				end)
+				
+			elseif state == "falling" then
+				character.Humanoid.JumpPower = game.StarterPlayer.CharacterJumpPower
+				character.Humanoid.JumpHeight = game.StarterPlayer.CharacterJumpHeight
+				
+				local load = character.Humanoid:LoadAnimation(animations.M1Variants.Falling)
+				load.Priority = Enum.AnimationPriority.Action4
+				load:Play()
+				load:AdjustSpeed(1.5)
+
+				load.KeyframeReached:Connect(function(keyframe)
+					task.wait()
+
+					if character:FindFirstChild("Stun") then
+						load:Stop()
+						cd = false
+
+						return
+					end
+
+					if keyframe == "Attack" then
+						local hb = Instance.new("Part", workspace.Fx)
+						hb.Size = Vector3.new(7, 5, 5)
+						hb.CFrame = character.HumanoidRootPart.CFrame * CFrame.new(0, 0, -2.5)
+						hb.Transparency = 1
+						hb.Anchored = true
+						hb.CanCollide = false
+
+						local connection
+						connection = hb.Touched:Connect(function()
+							connection:Disconnect()
+						end)
+
+						local hits = {}
+						for _, v in pairs(hb:GetTouchingParts()) do
+							if v:IsDescendantOf(character) == false then
+								if v.Parent:FindFirstChildOfClass("Humanoid") then
+									if table.find(hits, v.Parent) == nil then
+										table.insert(hits, v.Parent)
+									end
+								end
+							end
+						end
+
+						remotes.Combat:FireServer({action = "hit", hits = hits, combo = combo})
+
+						hb:Destroy()
+
+					elseif keyframe == "End" then
+						combo = 1
+
+						task.wait(1)
+						
+						cd = false
+						
+						task.delay(.25, function()
+							if cd == false then
+								character.Humanoid.JumpPower = game.StarterPlayer.CharacterJumpPower
+								character.Humanoid.JumpHeight = game.StarterPlayer.CharacterJumpHeight
+							end
+						end)
+					end
+				end)
+			else
+				local load = character.Humanoid:LoadAnimation(animations.M1:FindFirstChild(combo))
+				load.Priority = Enum.AnimationPriority.Action4
+				load:Play()
+
+				load.KeyframeReached:Connect(function(keyframe)
+					task.wait()
+
+					if character:FindFirstChild("Stun") then
+						load:Stop()
+						cd = false
+
+						character.Humanoid.JumpPower = game.StarterPlayer.CharacterJumpPower
+						character.Humanoid.JumpHeight = game.StarterPlayer.CharacterJumpHeight
+
+						return
+					end
+
+					if keyframe == "Attack" then
+						local hb = Instance.new("Part", workspace.Fx)
+						hb.Size = Vector3.new(7, 5, 5)
+						hb.CFrame = character.HumanoidRootPart.CFrame * CFrame.new(0, 0, -2.5)
+						hb.Transparency = 1
+						hb.Anchored = true
+						hb.CanCollide = false
+
+						local connection
+						connection = hb.Touched:Connect(function()
+							connection:Disconnect()
+						end)
+
+						local hits = {}
+						for _, v in pairs(hb:GetTouchingParts()) do
+							if v:IsDescendantOf(character) == false then
+								if v.Parent:FindFirstChildOfClass("Humanoid") then
+									if table.find(hits, v.Parent) == nil then
+										table.insert(hits, v.Parent)
+									end
+								end
+							end
+						end
+
+						remotes.Combat:FireServer({action = "hit", hits = hits, combo = combo})
+
+						hb:Destroy()
+
+					elseif keyframe == "End" then
+						if combo == 4 then
+							combo = 1
+							task.wait(1)
+						else
+							combo += 1
+							task.wait(.05)
+						end
+
+						cd = false
+						
+						task.delay(.25, function()
+							if cd == false then
+								character.Humanoid.JumpPower = game.StarterPlayer.CharacterJumpPower
+								character.Humanoid.JumpHeight = game.StarterPlayer.CharacterJumpHeight
+							end
+						end)
+					end
+				end)
+			end
+		else
+			local load = character.Humanoid:LoadAnimation(animations.M1:FindFirstChild(combo))
+			load.Priority = Enum.AnimationPriority.Action4
+			load:Play()
+
+			load.KeyframeReached:Connect(function(keyframe)
+				task.wait()
+
+				if character:FindFirstChild("Stun") then
+					load:Stop()
+					cd = false
+
+					character.Humanoid.JumpPower = game.StarterPlayer.CharacterJumpPower
+					character.Humanoid.JumpHeight = game.StarterPlayer.CharacterJumpHeight
+
+					return
+				end
+
+				if keyframe == "Attack" then
+					local hb = Instance.new("Part", workspace.Fx)
+					hb.Size = Vector3.new(7, 5, 5)
+					hb.CFrame = character.HumanoidRootPart.CFrame * CFrame.new(0, 0, -2.5)
+					hb.Transparency = 1
+					hb.Anchored = true
+					hb.CanCollide = false
+
+					local connection
+					connection = hb.Touched:Connect(function()
+						connection:Disconnect()
+					end)
+
+					local hits = {}
+					for _, v in pairs(hb:GetTouchingParts()) do
+						if v:IsDescendantOf(character) == false then
+							if v.Parent:FindFirstChildOfClass("Humanoid") then
+								if table.find(hits, v.Parent) == nil then
+									table.insert(hits, v.Parent)
+								end
+							end
+						end
+					end
+
+					remotes.Combat:FireServer({action = "hit", hits = hits, combo = combo})
+
+					hb:Destroy()
+
+				elseif keyframe == "End" then
+					if combo == 4 then
+						combo = 1
+						task.wait(1)
+					else
+						combo += 1
+						task.wait(.05)
+					end
+
+					cd = false
+					
+					task.delay(.25, function()
+						if cd == false then
+							character.Humanoid.JumpPower = game.StarterPlayer.CharacterJumpPower
+							character.Humanoid.JumpHeight = game.StarterPlayer.CharacterJumpHeight
+						end
+					end)
+				end
+			end)
+		end
+	end
+end
+
+return m1
+
+--StarterGui/Combat/Client/State
+
+local state = {}
+
+local RunService = game:GetService("RunService")
+
+local player = game.Players.LocalPlayer
+local character = player.Character
+
+local currentstate = "land"
+
+
+function state.GetState()
+	return currentstate
+end
+
+
+RunService.RenderStepped:Connect(function()		
+	if character.Humanoid.Jump == true then
+		currentstate = "air"
+	else
+		if character.Humanoid.FloorMaterial == Enum.Material.Air then
+			currentstate = "falling"
+		else
+			currentstate = "land"
+		end
+	end
+end)
+
+
+return state
+
+--StarterGui/Combat/MobileGui/MobileButtons
+
+for _, v in pairs(script.Parent:GetChildren()) do
+	if v:IsA("ImageButton") then
+		if v.Name ~= "Shiftlock" then
+			v.MouseButton1Down:Connect(function()
+				v.ImageRectOffset = Vector2.new(146, 146)
+			end)
+			
+			v.MouseButton1Up:Connect(function()
+				v.ImageRectOffset = Vector2.new(0, 146)
+			end)
+		end
+	end
+end
